@@ -1515,6 +1515,9 @@ let configure_makefile ~target ~root ~name ~warn_error info =
                   %s"
         extra_c_archives pkg_config_deps generate_image ;
       append fmt "\t@@echo Build succeeded";
+      newline fmt;
+      append fmt "clean::\n\
+              \tocamlbuild -clean";
       R.ok ()
     | `Virtio ->
       get_extra_ld_flags "freestanding" libs
@@ -1530,30 +1533,49 @@ let configure_makefile ~target ~root ~name ~warn_error info =
                   \t  -o mir-%s.virtio"
         extra_c_archives pkg_config_deps name ;
       append fmt "\t@@echo Build succeeded";
+      newline fmt;
+      append fmt "clean::\n\
+              \tocamlbuild -clean";
       R.ok ()
     | `Ukvm ->
       get_extra_ld_flags "freestanding" libs
       >>| String.concat ~sep:" \\\n\t  "
-      >>= fun extra_c_archives ->
-      append fmt "build:: main.native.o";
-      let pkg_config_deps = "mirage-solo5 ocaml-freestanding" in
-      append fmt "\tpkg-config --print-errors --exists %s" pkg_config_deps;
-      append fmt "\tld $$(pkg-config --variable=ldflags solo5-kernel-ukvm) \\\n\
+        >>= fun extra_c_archives ->
+          let ukvm_filter x = match x with
+          | "mirage-net-solo5" -> [ "net" ]
+          | "mirage-block-solo5" -> [ "blk" ]
+          | _ -> []
+          in
+          let ukvm_mods = String.concat ~sep:" " (List.concat (List.map ukvm_filter libs)) 
+          in
+        append fmt "UKVM_MODULES=%s" ukvm_mods;
+        append fmt "Makefile.ukvm:";
+        append fmt "\t ukvm-configure $$(pkg-config --variable=libdir solo5-kernel-ukvm)/src/ukvm $(UKVM_MODULES)";
+        newline fmt;
+        append fmt "include Makefile.ukvm";
+        append fmt "build:: main.native.o ukvm-bin";
+        let pkg_config_deps = "mirage-solo5 ocaml-freestanding solo5-kernel-ukvm" in
+        append fmt "\tpkg-config --print-errors --exists %s" pkg_config_deps;
+        append fmt "\tld $$(pkg-config --variable=ldflags solo5-kernel-ukvm) \\\n\
                   \t  _build/main.native.o \\\n\
                   \t  %s \\\n\
                   \t  $$(pkg-config --static --libs %s) \\\n\
                   \t  -o mir-%s.ukvm"
-        extra_c_archives pkg_config_deps name ;
-      append fmt "\t@@echo Build succeeded";
+          extra_c_archives pkg_config_deps name ;
+        append fmt "\t@@echo Build succeeded";
+        newline fmt;
+        append fmt "clean:: ukvm-clean\n\
+              \tocamlbuild -clean\n\
+              \t$(RM) Makefile.ukvm";
       R.ok ()
     | `Unix | `MacOSX ->
       append fmt "build: main.native";
       append fmt "\tln -nfs _build/main.native mir-%s" name;
+      newline fmt;
+      append fmt "clean::\n\
+              \tocamlbuild -clean";
       R.ok ()
   end >>= fun () ->
-  newline fmt;
-  append fmt "clean::\n\
-              \tocamlbuild -clean";
   newline fmt;
   append fmt "-include Makefile.user";
   R.ok ()
