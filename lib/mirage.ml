@@ -104,8 +104,8 @@ let qubesdb_conf = object
   method packages = Key.pure [ package "mirage-qubes" ]
   method configure i =
     match get_target i with
-    | `Qubes -> R.ok ()
-    | _ -> R.error_msg "Qubes DB invoked for non-Qubes target."
+    | `Qubes | `Xen -> R.ok ()
+    | _ -> R.error_msg "Qubes DB invoked for an unsupported target; qubes and xen are supported"
   method connect _ modname _args = Fmt.strf "%s.connect ~domid:0 ()" modname
 end
 
@@ -181,7 +181,7 @@ let stdlib_random_conf = object
   method ty = random
   method name = "random"
   method module_name = "Stdlibrandom"
-  method packages = Key.pure [ package "mirage-stdlib-random" ]
+  method packages = Key.pure [ package "mirage-random" ]
   method connect _ modname _ = Fmt.strf "Lwt.return (%s.initialize ())" modname
 end
 
@@ -411,7 +411,7 @@ let tar_block dir =
   impl @@ object
     inherit block_conf block_file as super
     method build i =
-      Bos.OS.Cmd.run Bos.Cmd.(v "tar" % "-C" % dir % "-cvf" % block_file) >>= fun () ->
+      Bos.OS.Cmd.run Bos.Cmd.(v "tar" % "-cvf" % block_file % dir) >>= fun () ->
       super#build i
   end
 
@@ -435,16 +435,16 @@ let fs = Type FS
 
 let fat_conf = impl @@ object
     inherit base_configurable
-    method ty = (block @-> io_page @-> fs)
+    method ty = (block @-> fs)
     method packages = Key.pure [ package "fat-filesystem" ]
     method name = "fat"
     method module_name = "Fat.FS"
     method connect _ modname l = match l with
-      | [ block_name ; _iop ] -> Fmt.strf "%s.connect %s" modname block_name
-      | _ -> failwith (connect_err "fat" 2)
+      | [ block_name ] -> Fmt.strf "%s.connect %s" modname block_name
+      | _ -> failwith (connect_err "fat" 1)
   end
 
-let fat ?(io_page=default_io_page) block = fat_conf $ block $ io_page
+let fat block = fat_conf $ block
 
 let fat_block ?(dir=".") ?(regexp="*") () =
   let name =
@@ -729,13 +729,13 @@ let ipv4_qubes db ethernet arp = ipv4_qubes_conf $ db $ ethernet $ arp
 
 let ipv6_conf ?addresses ?netmasks ?gateways () = impl @@ object
     inherit base_configurable
-    method ty = ethernet @-> time @-> mclock @-> ipv6
+    method ty = ethernet @-> random @-> time @-> mclock @-> ipv6
     method name = Name.create "ipv6" ~prefix:"ipv6"
     method module_name = "Ipv6.Make"
     method packages = Key.pure [ package ~sublibs:["ipv6"] "tcpip" ]
     method keys = addresses @?? netmasks @?? gateways @?? []
     method connect _ modname = function
-      | [ etif ; _time ; clock ] ->
+      | [ etif ; _random ; _time ; clock ] ->
         Fmt.strf "%s.connect@[@ %a@ %a@ %a@ %s@ %s@]"
           modname
           (opt_key "ip") addresses
@@ -746,13 +746,14 @@ let ipv6_conf ?addresses ?netmasks ?gateways () = impl @@ object
   end
 
 let create_ipv6
+    ?(random = default_random)
     ?(time = default_time)
     ?(clock = default_monotonic_clock)
     ?group etif { addresses ; netmasks ; gateways } =
   let addresses = Key.V6.ips ?group addresses in
   let netmasks = Key.V6.netmasks ?group netmasks in
   let gateways = Key.V6.gateways ?group gateways in
-  ipv6_conf ~addresses ~netmasks ~gateways () $ etif $ time $ clock
+  ipv6_conf ~addresses ~netmasks ~gateways () $ etif $ random $ time $ clock
 
 type 'a icmp = ICMP
 type icmpv4 = v4 icmp
@@ -881,7 +882,7 @@ let stackv4_direct_conf ?(group="") () = impl @@ object
     method connect _i modname = function
       | [ _t; _r; interface; ethif; arp; ip; icmp; udp; tcp ] ->
         Fmt.strf
-          "@[<2>let config = {V1_LWT.@ \
+          "@[<2>let config = {Mirage_stack_lwt.@ \
            name = %S;@ \
            interface = %s;}@]@ in@ \
            %s.connect config@ %s %s %s %s %s %s"
@@ -934,7 +935,7 @@ let stackv4_socket_conf ?(group="") interfaces = impl @@ object
       | [ udpv4 ; tcpv4 ] ->
         Fmt.strf
           "let config =@[@ \
-           { V1_LWT.name = %S;@ \
+           { Mirage_stack_lwt.name = %S;@ \
            interface = %a ;}@] in@ \
            %s.connect config %s %s"
           name pp_key interfaces modname udpv4 tcpv4
@@ -1069,7 +1070,8 @@ let resolver_dns_conf ~ns ~ns_port = impl @@ object
     method name = "resolver"
     method module_name = "Resolver_mirage.Make_with_stack"
     method packages =
-      Key.pure [ package ~sublibs:["mirage"] "dns"; package "tcpip" ]
+      Key.pure [ package ~ocamlfind:[] "mirage-conduit" ;
+        package ~sublibs:["mirage"] "conduit" ]
     method connect _ modname = function
       | [ _t ; stack ] ->
         let meta_ns = Fmt.Dump.option meta_ipv4 in
@@ -1155,7 +1157,7 @@ let syslog_tls_conf ?keyname config = impl @@ object
     inherit base_configurable
     method ty = console @-> pclock @-> stackv4 @-> kv_ro @-> syslog
     method name = "tls_syslog"
-    method module_name = "Logs_syslog_mirage.Tls"
+    method module_name = "Logs_syslog_mirage_tls.Tls"
     method packages = Key.pure [ package ~sublibs:["mirage" ; "mirage.tls"] "logs-syslog" ]
     method connect _i modname = function
       | [ console ; pclock ; stack ; kv ] ->
@@ -1590,10 +1592,10 @@ let configure_makefile ~opam_name =
       append fmt "OPAM = opam\n\
                   DEPEXT ?= opam depext --yes %s\n\
                   \n\
-                  .PHONY: all depend clean build\n\
+                  .PHONY: all depend depends clean build\n\
                   all:: build\n\
                   \n\
-                  depend::\n\
+                  depend depends::\n\
                   \t$(OPAM) pin add --no-action --yes %s .\n\
                   \t$(DEPEXT)\n\
                   \t$(OPAM) install --yes --deps-only %s\n\
@@ -1612,11 +1614,19 @@ let clean_makefile () = Bos.OS.File.delete Fpath.(v "Makefile")
 
 let fn = Fpath.(v "myocamlbuild.ml")
 
+(* ocamlbuild will give a misleading hint on build failures
+ * ( https://github.com/ocaml/ocamlbuild/blob/0eb62b72b5abd520484210125b18073338a634bc/src/ocaml_compiler.ml#L130 )
+ * if it doesn't detect that the project is an ocamlbuild
+ * project.  The only facility for hinting this is presence of
+ * myocamlbuild.ml or _tags
+ * ( https://github.com/ocaml/ocamlbuild/blob/0eb62b72b5abd520484210125b18073338a634bc/src/options.ml#L375-L387 )
+ * so we create an empty myocamlbuild.ml . *)
 let configure_myocamlbuild () =
   Bos.OS.File.exists fn >>= function
   | true -> R.ok ()
   | false -> Bos.OS.File.write fn ""
 
+(* we made it, so we should clean it up *)
 let clean_myocamlbuild () =
   match Bos.OS.Path.stat fn with
   | Ok stat when stat.Unix.st_size = 0 -> Bos.OS.File.delete fn
@@ -1662,7 +1672,6 @@ let compile libs warn_error target =
   let tags =
     [ Fmt.strf "predicate(%s)" (backend_predicate target);
       "warn(A-4-41-42-44)";
-      "color(always)";
       "debug";
       "bin_annot";
       "strict_sequence";
@@ -1722,7 +1731,7 @@ let pkg_config pkgs args =
   Bos.OS.Env.set_var var (Some value) >>= fun () ->
   let cmd = Bos.Cmd.(v "pkg-config" % pkgs %% of_list args) in
   Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.out_string >>| fun (data, _) ->
-  String.cuts ~sep:" " data
+  String.cuts ~sep:" " ~empty:false data
 
 (* Get the linker flags for any extra C objects we depend on.
  * This is needed when building a Xen/Solo5 image as we do the link manually. *)
@@ -1750,6 +1759,8 @@ let extra_c_artifacts target pkgs =
 let static_libs pkg_config_deps = pkg_config pkg_config_deps [ "--static" ; "--libs" ]
 
 let ldflags pkg = pkg_config pkg ["--variable=ldflags"]
+
+let ldpostflags pkg = pkg_config pkg ["--variable=ldpostflags"]
 
 let link info name target =
   let libs = Info.libraries info in
@@ -1789,10 +1800,12 @@ let link info name target =
     extra_c_artifacts "freestanding" libs >>= fun c_artifacts ->
     static_libs "mirage-solo5" >>= fun static_libs ->
     ldflags "solo5-kernel-virtio" >>= fun ldflags ->
+    ldpostflags "solo5-kernel-virtio" >>= fun ldpostflags ->
     let out = name ^ ".virtio" in
     let linker =
       Bos.Cmd.(v "ld" %% of_list ldflags % "_build/main.native.o" %%
-               of_list c_artifacts %% of_list static_libs % "-o" % out)
+               of_list c_artifacts %% of_list static_libs % "-o" % out
+               %% of_list ldpostflags)
     in
     Log.info (fun m -> m "linking with %a" Bos.Cmd.pp linker);
     Bos.OS.Cmd.run linker >>= fun () ->
@@ -1801,10 +1814,12 @@ let link info name target =
     extra_c_artifacts "freestanding" libs >>= fun c_artifacts ->
     static_libs "mirage-solo5" >>= fun static_libs ->
     ldflags "solo5-kernel-ukvm" >>= fun ldflags ->
+    ldpostflags "solo5-kernel-ukvm" >>= fun ldpostflags ->
     let out = name ^ ".ukvm" in
     let linker =
       Bos.Cmd.(v "ld" %% of_list ldflags % "_build/main.native.o" %%
-               of_list c_artifacts %% of_list static_libs % "-o" % out)
+               of_list c_artifacts %% of_list static_libs % "-o" % out
+               %% of_list ldpostflags)
     in
     let ukvm_mods =
       let ukvm_filter = function

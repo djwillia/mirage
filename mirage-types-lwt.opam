@@ -8,20 +8,24 @@ tags:         ["org:mirage" "org:xapi-project"]
 
 build: ["ocaml" "pkg/pkg.ml" "build" "--pkg-name" name "--pinned" "%{pinned}%"]
 depends: [
-  "ocamlfind" {build}
+  "ocamlfind"  {build}
+  "ocamlbuild" {build}
+  "topkg"      {build & >= "0.8.0"}
   "lwt"
   "cstruct" {>="1.4.0"}
   "io-page" {>="1.4.0"}
   "ipaddr"
-  "mirage-types" {>="3.0.0"}
-  "mirage-clock-lwt"
-  "mirage-time-lwt"
-  "mirage-random"
-  "mirage-flow-lwt"
+  "mirage-types" {>= "3.0.0"}
+  "mirage-clock-lwt" {>= "1.2.0"}
+  "mirage-time-lwt" {>= "1.0.0"}
+  "mirage-random" {>= "1.0.0"}
+  "mirage-flow-lwt" {>= "1.2.0"}
+  "mirage-protocols-lwt" {>= "1.0.0"}
+  "mirage-stack-lwt" {>= "1.0.0"}
   "mirage-console-lwt" {>= "1.2.0"}
   "mirage-block-lwt" {>= "1.0.0"}
   "mirage-net-lwt" {>= "1.0.0"}
   "mirage-fs-lwt" {>= "1.0.0"}
-  "mirage-kv-lwt"
-  "mirage-channel-lwt"
+  "mirage-kv-lwt" {>= "1.0.0"}
+  "mirage-channel-lwt" {>= "3.0.0"}
 ]
